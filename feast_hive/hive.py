@@ -1,3 +1,4 @@
+from pathlib import Path
 import contextlib
 from datetime import datetime
 from typing import Any, Callable, ContextManager, Dict, List, Optional, Tuple, Union
@@ -7,6 +8,7 @@ import pandas as pd
 import pyarrow as pa
 from dateutil import parser
 from pydantic import StrictBool, StrictInt, StrictStr
+from pydantic.typing import Literal
 from pytz import utc
 from six import reraise
 
@@ -37,6 +39,10 @@ except ImportError as e:
 # default Hive settings that can be overridden in offline_store:hive_conf of feature_store.yaml
 DEFAULT_HIVE_CONF = {
     "hive.strict.checks.cartesian.product": "false",
+    "hive.mapred.mode": "nonstrict",
+    "hive.support.quoted.identifiers": "none",
+    "hive.resultset.use.unique.column.names": "false",
+    "hive.exec.temporary.table.storage": "memory",
 }
 
 
@@ -45,6 +51,9 @@ class HiveOfflineStoreConfig(FeastConfigBaseModel):
 
     type: StrictStr = "hive"
     """ Offline store type selector """
+
+    engine_type: Literal["hive", "impala"] = "hive"
+    """ "hive" or "impala" suported """
 
     host: StrictStr
     """ Host name of the HiveServer2 """
@@ -85,8 +94,11 @@ class HiveOfflineStoreConfig(FeastConfigBaseModel):
     password: Optional[StrictStr] = None
     """ LDAP password to authenticate """
 
-    kerberos_service_name: StrictStr = "impala"
+    kerberos_service_name: Optional[StrictStr] = "hive"
     """ Specify particular impalad service principal. """
+
+    query_template: StrictStr = "default"
+    """ What SQL template to use for historical feature retrival (select from feast_hive/templates directory) """
 
     def __init__(self, **data: Any):
         if "hive_conf" not in data:
@@ -107,7 +119,7 @@ class HiveConnection:
         self._store_config = store_config
         self._real_conn = impala_connect(
             **store_config.dict(
-                exclude={"type", "entity_uploading_chunk_size", "hive_conf"}
+                exclude={"type", "entity_uploading_chunk_size", "hive_conf", "engine_type", "query_template"}
             )
         )
 
@@ -119,7 +131,7 @@ class HiveConnection:
         self.real_conn.close()
 
     def cursor(self) -> ImpalaCursor:
-        if self._store_config.hive_conf:
+        if self._store_config.hive_conf and self._store_config.engine_type == "hive":
             return self.real_conn.cursor(configuration=self._store_config.hive_conf)
         else:
             return self.real_conn.cursor()
@@ -164,8 +176,15 @@ class HiveOfflineStore(OfflineStore):
         start_date = _format_datetime(start_date)
         end_date = _format_datetime(end_date)
 
-        queries = [
-            "SET hive.resultset.use.unique.column.names=false",
+        # if config.offline_store.engine_type == "hive":
+        #     queries = ["SET hive.resultset.use.unique.column.names=false"]
+        # elif config.offline_store.engine_type == "impala":
+        #     queries = []
+        # else:
+        #     raise ValueError("engine_type must be `hive` or `impala`")
+
+        queries = []
+        queries.append(
             f"""
             SELECT 
                 {field_string}
@@ -177,8 +196,7 @@ class HiveOfflineStore(OfflineStore):
                 WHERE {event_timestamp_column} BETWEEN TIMESTAMP('{start_date}') AND TIMESTAMP('{end_date}')
             ) t2
             WHERE feast_row_ = 1
-            """,
-        ]
+            """)
 
         conn = HiveConnection(config.offline_store)
         return HiveRetrievalJob(conn, queries)
@@ -229,23 +247,20 @@ class HiveOfflineStore(OfflineStore):
                     entity_df_event_timestamp_range,
                 )
 
+                query_tmpl = open(Path(__file__).parent / f"templates/{config.offline_store.query_template}.sql").read()
+
                 rendered_query = offline_utils.build_point_in_time_query(
                     query_contexts,
                     left_table_query_string=table_name,
                     entity_df_event_timestamp_col=entity_df_event_timestamp_col,
                     entity_df_columns=entity_schema.keys(),
-                    query_template=MULTIPLE_FEATURE_VIEW_POINT_IN_TIME_JOIN,
+                    query_template=query_tmpl,
                     full_feature_names=full_feature_names,
                 )
 
                 # In order to use `REGEX Column Specification`, need set `hive.support.quoted.identifiers` to None.
                 # Can study more here: https://cwiki.apache.org/confluence/display/Hive/LanguageManual+Select
-                queries = [
-                    "SET hive.mapred.mode=nonstrict",
-                    "SET hive.support.quoted.identifiers=none",
-                    "SET hive.resultset.use.unique.column.names=false",
-                    "SET hive.exec.temporary.table.storage=memory",
-                ] + rendered_query.split(";")
+                queries = rendered_query.split(";")
 
                 yield queries
 
@@ -373,13 +388,7 @@ def _upload_entity_df_and_get_entity_schema(
             cursor.execute(
                 f"CREATE TABLE {table_name} STORED AS PARQUET AS {entity_df}"
             )
-        limited_entity_df = HiveRetrievalJob(
-            conn,
-            [
-                "SET hive.resultset.use.unique.column.names=false",
-                f"SELECT * FROM {table_name} LIMIT 1",
-            ],
-        ).to_df()
+        limited_entity_df = HiveRetrievalJob(conn, [f"SELECT * FROM {table_name} LIMIT 1"]).to_df()
         return dict(zip(limited_entity_df.columns, limited_entity_df.dtypes))
     else:
         raise InvalidEntityType(type(entity_df))
