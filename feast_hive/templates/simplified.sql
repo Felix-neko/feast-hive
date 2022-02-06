@@ -4,7 +4,7 @@ entity_dataframe: for each extractable entity set set the following fields:
 - timestamp
 - and for each extractable Feature View we set a special key string:
     {featureview}_entity_row_unique_id. It is composed from following string representation
-    - всех entity id used in this FeatureView
+    - all entity ids used in this FeatureView
     - timestamps of extractable entity (not feature view's timestamp = )
 #}
 
@@ -14,7 +14,7 @@ WITH entity_dataframe AS
         {%- for fv in featureviews %}
             CONCAT(
                 {%- for entity in fv.entities %}CAST({{entity}} AS STRING), {% endfor -%}
-                CAST({{entity_df_event_timestamp_col}} AS STRING)) AS {{fv.name}}__entity_row_unique_id
+                CAST({{entity_df_event_timestamp_col}} AS STRING)) AS {{ fv.name }}__entity_row_unique_id
                 {%- if not loop.last %},{% endif -%}
         {%- endfor %}
     FROM {{ left_table_query_string }}
@@ -50,37 +50,37 @@ that contains row unique id columns only for given {feature view}
 {%- for fv in featureviews %}
 {{ fv.name }}__entity_dataframe AS
 (
-    SELECT {{ fv.entities | join(', ')}}, entity_timestamp, {{fv.name}}__entity_row_unique_id
+    SELECT {{ fv.entities | join(', ')}}, entity_timestamp, {{ fv.name }}__entity_row_unique_id
     FROM entity_dataframe
-    GROUP BY {{ fv.entities | join(', ')}}, entity_timestamp, {{fv.name}}__entity_row_unique_id
+    GROUP BY {{ fv.entities | join(', ')}}, entity_timestamp, {{ fv.name }}__entity_row_unique_id
 ),
 {{ fv.name }}__suitable_objects AS
 (
     SELECT {{ fv.name }}__entity_dataframe.{{ fv.name }}__entity_row_unique_id,
-        {% for entity in fv.entities %}{{ fv.name }}.{{ entity }},{% endfor %} MAX({{ fv.name }}.{{ fv.event_timestamp_column }}) AS max_event_timestamp
-    FROM {{ fv.name }}__entity_dataframe INNER JOIN {{ fv.name }} ON
+        {% for entity in fv.entities %}{{ fv.table_subquery }}.{{ entity }},{% endfor %} MAX({{ fv.table_subquery }}.{{ fv.event_timestamp_column }}) AS max_event_timestamp
+    FROM {{ fv.name }}__entity_dataframe INNER JOIN {{ fv.table_subquery }} ON
         {%- for entity in fv.entities %}
-            {% if not loop.first %}AND {% endif %}{{ fv.name }}__entity_dataframe.{{ entity }} = {{ fv.name }}.{{ entity }}
+            {% if not loop.first %}AND {% endif %}{{ fv.name }}__entity_dataframe.{{ entity }} = {{ fv.table_subquery }}.{{ entity }}
         {% endfor -%}
-    WHERE {{ fv.name }}.{{ fv.event_timestamp_column }} <= {{ fv.name }}__entity_dataframe.entity_timestamp
-        AND {{ fv.name }}.{{ fv.event_timestamp_column }} >= {{ fv.name }}__entity_dataframe.entity_timestamp - interval {{ fv.ttl }} second
-    GROUP BY {% for entity in fv.entities %}{{ fv.name }}.{{ entity }}, {% endfor %}{{ fv.name }}__entity_dataframe.{{ fv.name }}__entity_row_unique_id
+    WHERE {{ fv.table_subquery }}.{{ fv.event_timestamp_column }} <= {{ fv.name }}__entity_dataframe.entity_timestamp
+        AND {{ fv.table_subquery }}.{{ fv.event_timestamp_column }} >= {{ fv.name }}__entity_dataframe.entity_timestamp - interval {{ fv.ttl }} second
+    GROUP BY {% for entity in fv.entities %}{{ fv.table_subquery }}.{{ entity }}, {% endfor %}{{ fv.name }}__entity_dataframe.{{ fv.name }}__entity_row_unique_id
 ),
 {{ fv.name }}__prefinal AS
 (
     SELECT
         {{ fv.name }}__suitable_objects.{{ fv.name }}__entity_row_unique_id,
         {%- for feature in fv.features %}
-        {{ fv.name }}.{{ feature }} AS {{ feature }},
+        {{ fv.table_subquery }}.{{ feature }} AS {{ feature }},
         {%- endfor %}
         ROW_NUMBER() OVER(PARTITION BY {{ fv.name }}__suitable_objects.{{ fv.name }}__entity_row_unique_id
-            ORDER BY {{ fv.name }}.event_timestamp) AS {{ fv.name }}__duplicate_index
-    FROM {{ fv.name }}__suitable_objects INNER JOIN {{ fv.name }}
+            ORDER BY {{ fv.table_subquery }}.event_timestamp) AS {{ fv.name }}__duplicate_index
+    FROM {{ fv.name }}__suitable_objects INNER JOIN {{ fv.table_subquery }}
     ON
         {%- for entity in fv.entities %}
-        {% if not loop.first %}AND {% endif %}{{ fv.name }}__suitable_objects.{{ entity }} = {{ fv.name }}.{{ entity }}
+        {% if not loop.first %}AND {% endif %}{{ fv.name }}__suitable_objects.{{ entity }} = {{ fv.table_subquery }}.{{ entity }}
         {% endfor -%}
-        AND {{ fv.name }}__suitable_objects.max_event_timestamp = {{ fv.name }}.{{ fv.event_timestamp_column }}
+        AND {{ fv.name }}__suitable_objects.max_event_timestamp = {{ fv.table_subquery }}.{{ fv.event_timestamp_column }}
 ),
 {{ fv.name }}__output AS
 (
