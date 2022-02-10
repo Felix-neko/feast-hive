@@ -93,7 +93,9 @@ And here we do our big and fat final JOIN: each row of entity_dataframe is enric
     feature views by its keys (or None, NaN and NaTs are written if no such data were found)
 #}
 SELECT
-{%- for fv in featureviews -%}
+    {% for entity_key in unique_entity_keys %}entity_dataframe.{{ entity_key }}, {% endfor -%}
+entity_dataframe.entity_timestamp AS {{ entity_df_event_timestamp_col }},
+    {%- for fv in featureviews -%}
     {%- set outer_loop = loop -%}
     {%- for feature in fv.features %}
     {{ fv.name }}__output.{{ feature }} AS {% if full_feature_names %}{{ fv.name }}__{% endif -%}{{ feature }}
