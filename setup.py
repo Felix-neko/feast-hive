@@ -34,6 +34,7 @@ setup(
     },
     license='Apache License, Version 2.0',
     packages=["feast_hive"],
+    package_data={'feast_hive': ['templates/*.sql']},
     install_requires=INSTALL_REQUIRE,
     extras_require={
         "dev": DEV_REQUIRE + TEST_REQUIRE,
